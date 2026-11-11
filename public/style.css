@@ -93,7 +93,8 @@ tr:last-child td { border-bottom: 0; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 tr.total td { font-weight: 800; border-top: 2px solid var(--ink); border-bottom: 0; }
-.scroll { overflow-x: auto; }
+/* Scrollable tables get breathing room so the soft shadows of buttons and badges aren't cut off at the edges. */
+.scroll { overflow-x: auto; margin: -12px; padding: 12px; }
 
 /* ---------- dashboard ---------- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 20px; margin-bottom: 26px; }
@@ -144,9 +145,11 @@ tr.total td { font-weight: 800; border-top: 2px solid var(--ink); border-bottom:
 .steps .st.done:hover { color: var(--brand); }
 
 .wizard.ready .vp { overflow: hidden; margin: -14px; padding: 14px; transition: height 420ms var(--ease); box-sizing: content-box; }
-.wizard.ready .tr { display: flex; align-items: flex-start; width: 300%; transform: translateX(calc(var(--s) * -33.3333%)); transition: transform 560ms var(--ease); }
-.wizard.ready .pg { width: 33.3333%; padding: 0 14px; flex-shrink: 0; }
-.wizard.ready .pg:first-child { padding-left: 0; } .wizard.ready .pg:last-child { padding-right: 0; }
+/* Pages sit side by side with a wide gap, so a neighbouring step (and its soft shadows) can never
+   peek into the visible area; off-screen steps also fade out. */
+.wizard.ready .tr { --gap: 72px; display: flex; align-items: flex-start; gap: var(--gap); transform: translateX(calc(var(--s) * (-100% - var(--gap)))); transition: transform 560ms var(--ease); }
+.wizard.ready .pg { flex: 0 0 100%; min-width: 0; transition: opacity 300ms ease; }
+.wizard.ready .pg[inert] { opacity: 0; }
 .wizard[data-first] .bk { visibility: hidden; }
 .wizard.ready:not([data-last]) .gw { display: none; }
 .wizard[data-last] .nx { display: none; }
