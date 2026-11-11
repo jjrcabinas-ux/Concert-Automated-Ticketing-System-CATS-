@@ -1,0 +1,14 @@
+{
+  "name": "barangay-concert-tickets",
+  "version": "1.0.0",
+  "description": "Concert ticket selling system for barangay residents: sales, e-tickets, gate check-in and financial reports",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "setup-webhook": "node setup-webhook.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "qrcode": "^1.5.4"
+  }
+}
