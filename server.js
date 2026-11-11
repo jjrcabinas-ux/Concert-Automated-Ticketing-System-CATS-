@@ -61,6 +61,7 @@ const flashOf = (req) => req.query.err ? { type: 'error', text: req.query.err }
   : req.query.msg ? { type: 'ok', text: req.query.msg } : null;
 const withMsg = (url, key, text) => url + (url.includes('?') ? '&' : '?') + key + '=' + encodeURIComponent(text);
 const stripFlash = (url) => { const u = new URL(url, 'http://x'); u.searchParams.delete('msg'); u.searchParams.delete('err'); return u.pathname + u.search; };
+const wantsJson = (req) => req.get('X-Requested-With') === 'fetch';
 const clean = (s, max = 120) => String(s ?? '').trim().slice(0, max);
 const toCentavos = (s) => Math.round(parseFloat(String(s).replace(/,/g, '')) * 100);
 
@@ -118,37 +119,44 @@ app.get('/event/:id', (req, res) => {
   const body = `<h1>${esc(ev.name)}</h1>
     <p class="sub">${esc(fmtEventDate(ev.event_date))} · ${esc(ev.venue)}</p>
     <p>${esc(ev.description)}</p>
-    ${ev.on_sale ? `<form method="post" action="/event/${ev.id}/order">
-      <div class="card"><h2>1. Choose your tickets</h2>${tiers}
-        <p style="text-align:right;margin:12px 0 0">Total: <strong id="total">${peso(0)}</strong>
-        <br><small class="sub">Maximum ${D.MAX_PER_ORDER} tickets per order</small></p></div>
-      <div class="card"><h2>2. Your details</h2>
-        <div class="row">
-          <div><label for="n">Full name</label><input id="n" name="buyer_name" required maxlength="80" autocomplete="name"></div>
-          <div><label for="m">Mobile number</label><input id="m" name="mobile" required inputmode="numeric" pattern="09[0-9]{9}" placeholder="09XXXXXXXXX" title="11-digit mobile number starting with 09"></div>
-        </div>
-        <label for="a">Purok / Street address in the barangay</label><input id="a" name="address" required maxlength="120"></div>
-      <div class="card"><h2>3. How will you pay?</h2>
-        ${onlineAvailable() ? `<label class="radio"><input type="radio" name="payment_method" value="online" checked>
-          <span><strong>Pay online now</strong><small>GCash / e-wallet. Tickets are issued instantly. Finish payment within ${D.ONLINE_HOLD_MIN} minutes.</small></span></label>` : ''}
-        <label class="radio"><input type="radio" name="payment_method" value="cash" ${onlineAvailable() ? '' : 'checked'}>
-          <span><strong>Pay cash at the Barangay Hall</strong><small>We hold your tickets for ${D.CASH_HOLD_HOURS} hours. Bring your order number to the treasurer.</small></span></label>
-      </div>
-      <button class="btn block">Place order</button></form>
-      <script>
-        const sels = document.querySelectorAll('select[data-price]');
-        const upd = () => { let t = 0; sels.forEach(s => t += s.value * s.dataset.price);
-          document.getElementById('total').textContent = '₱' + (t / 100).toLocaleString('en-PH', { minimumFractionDigits: 2 }); };
-        sels.forEach(s => s.addEventListener('change', upd)); upd();
-      </script>` : '<div class="notice">Ticket sales for this event are closed.</div>'}`;
+    ${ev.on_sale ? `<form class="wizard card" method="post" action="/event/${ev.id}/order" data-max="${D.MAX_PER_ORDER}">
+      <div class="steps" aria-hidden="true"><i class="ln"><b></b></i>
+        <button type="button" class="st on" data-go="0" tabindex="-1"><u>1</u>Tickets</button>
+        <button type="button" class="st" data-go="1" tabindex="-1"><u>2</u>Your details</button>
+        <button type="button" class="st" data-go="2" tabindex="-1"><u>3</u>Review &amp; pay</button></div>
+      <div class="vp"><div class="tr">
+        <section class="pg" aria-label="Step 1 of 3: Choose your tickets"><h2>Choose your tickets</h2>${tiers}
+          <p class="tot">Total: <strong data-total>${peso(0)}</strong><br><small class="sub">Maximum ${D.MAX_PER_ORDER} tickets per order</small></p></section>
+        <section class="pg" aria-label="Step 2 of 3: Your details"><h2>Your details</h2>
+          <div class="row">
+            <div><label for="n">Full name</label><input id="n" name="buyer_name" required maxlength="80" autocomplete="name"></div>
+            <div><label for="m">Mobile number</label><input id="m" name="mobile" required inputmode="numeric" maxlength="16" pattern="09[0-9]{9}" placeholder="09XXXXXXXXX" title="11-digit mobile number starting with 09"></div>
+          </div>
+          <label for="a">Purok / Street address in the barangay</label><input id="a" name="address" required maxlength="120"></section>
+        <section class="pg" aria-label="Step 3 of 3: Review and pay"><h2>Review &amp; pay</h2>
+          <div class="review" data-review></div>
+          <h2>How will you pay?</h2>
+          ${onlineAvailable() ? `<label class="radio"><input type="radio" name="payment_method" value="online" checked>
+            <span><strong>Pay online now</strong><small>GCash / e-wallet. Tickets are issued instantly. Finish payment within ${D.ONLINE_HOLD_MIN} minutes.</small></span></label>` : ''}
+          <label class="radio"><input type="radio" name="payment_method" value="cash" ${onlineAvailable() ? '' : 'checked'}>
+            <span><strong>Pay cash at the Barangay Hall</strong><small>We hold your tickets for ${D.CASH_HOLD_HOURS} hours. Bring your order number to the treasurer.</small></span></label></section>
+      </div></div>
+      <p class="werr" role="alert"></p>
+      <div class="ft"><button type="button" class="btn ghost bk">Back</button>
+        <button type="button" class="btn nx">Next</button>
+        <span class="gw"><button type="submit" class="btn go" data-s="idle"><i class="g"></i><span class="lab">Place order</span>
+          <span class="dots" aria-hidden="true"><b></b><b></b><b></b></span>
+          <svg class="ck" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></button></span></div>
+      <p class="vh" aria-live="polite"></p></form>
+      <script src="/wizard.js" defer></script>` : '<div class="notice">Ticket sales for this event are closed.</div>'}`;
   res.send(page(ev.name, body, { flash: flashOf(req) }));
 });
 
 app.post('/event/:id/order', (req, res) => {
   const b = req.body, back = '/event/' + req.params.id;
-  const buyerName = clean(b.buyer_name, 80), mobile = clean(b.mobile, 11), address = clean(b.address);
-  if (!buyerName || !address) return res.redirect(withMsg(back, 'err', 'Please fill in your name and address.'));
-  if (!/^09\d{9}$/.test(mobile)) return res.redirect(withMsg(back, 'err', 'Enter an 11-digit mobile number starting with 09.'));
+  const buyerName = clean(b.buyer_name, 80), mobile = clean(b.mobile, 20).replace(/\D/g, ''), address = clean(b.address);
+  if (!buyerName || !address) throw new D.UserError('Please fill in your name and address.');
+  if (!/^09\d{9}$/.test(mobile)) throw new D.UserError('Enter an 11-digit mobile number starting with 09.');
   const quantities = {};
   for (const [k, v] of Object.entries(b)) {
     const m = /^qty_(\d+)$/.exec(k), n = parseInt(v, 10);
@@ -156,7 +164,10 @@ app.post('/event/:id/order', (req, res) => {
   }
   const paymentMethod = b.payment_method === 'online' && onlineAvailable() ? 'online' : 'cash';
   const token = D.createOrder({ eventId: req.params.id, buyerName, mobile, address, paymentMethod, quantities });
-  res.redirect(paymentMethod === 'online' ? '/pay/' + token : '/order/' + token);
+  const next = paymentMethod === 'online' ? '/pay/' + token : '/order/' + token;
+  // The step-by-step form sends the order in the background (to play its button animation) and wants JSON back.
+  if (wantsJson(req)) return res.json({ redirect: next });
+  res.redirect(next);
 });
 
 // ---------- online payment ----------
@@ -570,6 +581,7 @@ app.post('/admin/types/:id', (req, res) => {
 app.use((req, res) => res.status(404).send(page('Not found', '<h1>Page not found</h1><p><a href="/">Back to concerts</a></p>')));
 app.use((err, req, res, next) => {
   if (err instanceof D.UserError || err.gateway) {
+    if (wantsJson(req)) return res.status(400).json({ error: err.message });
     const back = req.get('referer') ? stripFlash(req.get('referer')) : '/';
     return res.redirect(withMsg(back, 'err', err.message));
   }
