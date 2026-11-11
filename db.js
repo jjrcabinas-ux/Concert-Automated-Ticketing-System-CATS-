@@ -93,8 +93,25 @@ const destroySession = (token) => q('DELETE FROM sessions WHERE token = ?').run(
 
 // ---------- first-run seed ----------
 function seed() {
-  if (!q('SELECT 1 FROM users').get()) {
-    const pw = process.env.ADMIN_PASSWORD || crypto.randomBytes(9).toString('base64url');
+  const envPw = (process.env.ADMIN_PASSWORD || '').trim();
+  if (envPw) {
+    // Hosted setup: the admin password comes from the ADMIN_PASSWORD setting and is re-applied on every start,
+    // so changing that setting and restarting is how the password is changed or recovered.
+    if (envPw.length < 10) throw new Error('ADMIN_PASSWORD must be at least 10 characters.');
+    const u = q(`SELECT * FROM users WHERE username = 'admin'`).get();
+    if (u) {
+      const [salt, hash] = u.pass_hash.split(':');
+      if (crypto.scryptSync(envPw, salt, 32).toString('hex') !== hash) {
+        q(`UPDATE users SET pass_hash = ? WHERE username = 'admin'`).run(hashPassword(envPw));
+        q(`DELETE FROM sessions WHERE username = 'admin'`).run();
+        console.log('Admin password updated from ADMIN_PASSWORD.');
+      }
+    } else {
+      q('INSERT INTO users (username, pass_hash) VALUES (?,?)').run('admin', hashPassword(envPw));
+      console.log('Admin account created with the password from ADMIN_PASSWORD.');
+    }
+  } else if (!q('SELECT 1 FROM users').get()) {
+    const pw = crypto.randomBytes(9).toString('base64url');
     q('INSERT INTO users (username, pass_hash) VALUES (?,?)').run('admin', hashPassword(pw));
     fs.writeFileSync(path.join(DATA_DIR, 'admin-credentials.txt'),
       `Admin login for /admin\nusername: admin\npassword: ${pw}\n`);

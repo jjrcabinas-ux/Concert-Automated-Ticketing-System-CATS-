@@ -8,8 +8,20 @@ const { esc, peso, fmtDateTime, fmtEventDate, METHOD, badge, page } = require('.
 
 const app = express();
 app.disable('x-powered-by');
-if (process.env.PUBLIC_URL) app.set('trust proxy', true);
+if (process.env.PUBLIC_URL) app.set('trust proxy', true);   // hosts put an HTTPS proxy in front of the app
 const baseUrl = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+const HTTPS = /^https:/.test(process.env.PUBLIC_URL || '');
+// The demo payment button hands out free tickets, so it only exists on a local test copy, never on the hosted site.
+const DEMO_OK = process.env.ALLOW_DEMO_PAYMENTS === '1' || (!process.env.PUBLIC_URL && process.env.NODE_ENV !== 'production');
+const onlineAvailable = () => PM.enabled() || DEMO_OK;
+const payMode = () => PM.enabled() ? 'PayMongo ' + PM.mode() : DEMO_OK ? 'DEMO' : 'OFF (cash only until PayMongo keys are added)';
+
+app.use((req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' });
+  if (HTTPS) res.set('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
+app.get('/healthz', (req, res) => res.send('ok'));     // for the host's uptime check
 
 // Applies a PayMongo checkout session to our order: issues tickets if it was paid. Safe to call repeatedly.
 async function settleFromSession(orderId, session) {
@@ -117,9 +129,9 @@ app.get('/event/:id', (req, res) => {
         </div>
         <label for="a">Purok / Street address in the barangay</label><input id="a" name="address" required maxlength="120"></div>
       <div class="card"><h2>3. How will you pay?</h2>
-        <label class="radio"><input type="radio" name="payment_method" value="online" checked>
-          <span><strong>Pay online now</strong><small>GCash / e-wallet. Tickets are issued instantly. Finish payment within ${D.ONLINE_HOLD_MIN} minutes.</small></span></label>
-        <label class="radio"><input type="radio" name="payment_method" value="cash">
+        ${onlineAvailable() ? `<label class="radio"><input type="radio" name="payment_method" value="online" checked>
+          <span><strong>Pay online now</strong><small>GCash / e-wallet. Tickets are issued instantly. Finish payment within ${D.ONLINE_HOLD_MIN} minutes.</small></span></label>` : ''}
+        <label class="radio"><input type="radio" name="payment_method" value="cash" ${onlineAvailable() ? '' : 'checked'}>
           <span><strong>Pay cash at the Barangay Hall</strong><small>We hold your tickets for ${D.CASH_HOLD_HOURS} hours. Bring your order number to the treasurer.</small></span></label>
       </div>
       <button class="btn block">Place order</button></form>
@@ -142,7 +154,7 @@ app.post('/event/:id/order', (req, res) => {
     const m = /^qty_(\d+)$/.exec(k), n = parseInt(v, 10);
     if (m && n > 0 && n <= D.MAX_PER_ORDER) quantities[m[1]] = n;
   }
-  const paymentMethod = b.payment_method === 'cash' ? 'cash' : 'online';
+  const paymentMethod = b.payment_method === 'online' && onlineAvailable() ? 'online' : 'cash';
   const token = D.createOrder({ eventId: req.params.id, buyerName, mobile, address, paymentMethod, quantities });
   res.redirect(paymentMethod === 'online' ? '/pay/' + token : '/order/' + token);
 });
@@ -155,7 +167,7 @@ app.get('/pay/:token', async (req, res) => {
   D.expireOrders();
   const o = D.orderDetail('token', req.params.token);
   if (!o) return res.status(404).send(page('Not found', '<h1>Order not found</h1>'));
-  if (o.status !== 'pending' || o.payment_method !== 'online') return res.redirect('/order/' + o.token);
+  if (o.status !== 'pending' || o.payment_method !== 'online' || !onlineAvailable()) return res.redirect('/order/' + o.token);
   if (PM.enabled()) {
     if (o.gateway_url) return res.redirect(o.gateway_url);
     const session = await PM.createCheckout(o, baseUrl(req));
@@ -173,7 +185,7 @@ app.get('/pay/:token', async (req, res) => {
 app.post('/pay/:token', (req, res) => {
   const o = D.orderDetail('token', req.params.token);
   if (!o) return res.status(404).send(page('Not found', '<h1>Order not found</h1>'));
-  if (PM.enabled()) return res.sendStatus(404);                       // demo button is off once PayMongo is connected
+  if (PM.enabled() || !DEMO_OK) return res.sendStatus(404);            // demo button: local test copies only
   if (o.payment_method !== 'online') throw new D.UserError('This order is to be paid in cash at the Barangay Hall.');
   D.markPaid(o.id, { paymentRef: 'DEMO-' + Date.now() });
   res.redirect(withMsg('/order/' + o.token, 'msg', 'Payment received. Your tickets are ready!'));
@@ -254,10 +266,21 @@ app.get('/admin/login', (req, res) => res.send(page('Admin login', `<h1>Admin lo
     <label for="p">Password</label><input id="p" name="password" type="password" required autocomplete="current-password">
     <p><button class="btn">Log in</button></p></form>`, { admin: true, flash: flashOf(req) })));
 
+// Slows down password guessing: 10 wrong attempts from one address locks it out for 15 minutes.
+const failedLogins = new Map();
 app.post('/admin/login', (req, res) => {
+  const ip = req.ip, f = failedLogins.get(ip);
+  if (f && f.count >= 10 && Date.now() - f.since < 15 * 60e3)
+    return res.redirect(withMsg('/admin/login', 'err', 'Too many wrong attempts. Try again in 15 minutes.'));
   const user = D.checkLogin(req.body.username, req.body.password);
-  if (!user) return res.redirect(withMsg('/admin/login', 'err', 'Wrong username or password.'));
-  res.setHeader('Set-Cookie', `sid=${D.createSession(user)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200`);
+  if (!user) {
+    const cur = f && Date.now() - f.since < 15 * 60e3 ? f : { count: 0, since: Date.now() };
+    cur.count++; failedLogins.set(ip, cur);
+    if (failedLogins.size > 10000) failedLogins.clear();
+    return res.redirect(withMsg('/admin/login', 'err', 'Wrong username or password.'));
+  }
+  failedLogins.delete(ip);
+  res.setHeader('Set-Cookie', `sid=${D.createSession(user)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200${HTTPS ? '; Secure' : ''}`);
   const next = String(req.body.next || '');
   res.redirect(next.startsWith('/admin') ? next : '/admin');
 });
@@ -292,7 +315,7 @@ app.get('/admin', (req, res) => {
   const recent = D.listOrders(ev.id).slice(0, 8);
   res.send(adminPage(req, 'Dashboard', `<h1>${esc(ev.name)}</h1>
     <p class="sub">${esc(fmtEventDate(ev.event_date))} · ${esc(ev.venue)} · ${ev.on_sale ? 'On sale' : 'Sales closed'}</p>${picker}
-    ${{ demo: '<div class="notice"><strong>Online payments are in demo mode.</strong> No real money is collected. Add your PayMongo keys to the <code>.env</code> file to go live (see README).</div>', test: '<div class="notice"><strong>PayMongo is connected in TEST mode.</strong> Payments are simulated by PayMongo; switch to your live secret key to collect real money.</div>', live: '' }[PM.mode()]}
+    ${!PM.enabled() && !DEMO_OK ? '<div class="notice"><strong>Online payment is switched off</strong> — residents can only reserve and pay cash until the PayMongo keys are added in the hosting settings (see HOSTING.md).</div>' : ''}${{ demo: !DEMO_OK ? '' : '<div class="notice"><strong>Online payments are in demo mode.</strong> No real money is collected. Add your PayMongo keys to the <code>.env</code> file to go live (see README).</div>', test: '<div class="notice"><strong>PayMongo is connected in TEST mode.</strong> Payments are simulated by PayMongo; switch to your live secret key to collect real money.</div>', live: '' }[PM.mode()]}
     <div class="kpis">
       <div class="kpi"><div class="v">${peso(f.netSales)}</div><div class="l">Net ticket sales</div></div>
       <div class="kpi"><div class="v">${f.ticketsSold} / ${f.capacity}</div><div class="l">Tickets sold</div></div>
@@ -555,4 +578,7 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Barangay Concert Tickets running (online payments: ${PM.mode() === 'demo' ? 'DEMO' : 'PayMongo ' + PM.mode()}):\n  Residents: http://localhost:${PORT}\n  Admin:     http://localhost:${PORT}/admin`));
+app.listen(PORT, () => {
+  const url = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+  console.log(`Barangay Concert Tickets running (online payments: ${payMode()}):\n  Residents: ${url}\n  Admin:     ${url}/admin`);
+});

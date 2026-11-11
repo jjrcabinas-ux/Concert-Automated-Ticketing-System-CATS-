@@ -49,10 +49,14 @@ How it behaves:
 - `db.js` — database and business rules
 - `paymongo.js`, `setup-webhook.js` — PayMongo integration
 - `views.js`, `public/style.css` — layout
+- `Dockerfile`, `HOSTING.md` — hosting
 - `data/tickets.db` — all records (back this file up)
+
+## Putting it online
+
+See [HOSTING.md](HOSTING.md) for step-by-step hosting on Railway (or any Docker host with a persistent volume).
 
 ## Before going live
 
-- Host it on a server with HTTPS so residents can reach it from their phones, and so PayMongo can reach `/webhooks/paymongo`.
 - The PayMongo integration was tested against a local stand-in for their API, not yet with a real account — run a few test-mode payments first.
 - Back up `data/tickets.db` regularly.
